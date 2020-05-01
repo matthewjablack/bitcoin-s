@@ -55,7 +55,7 @@ class DbManagementTest extends BitcoinSAsyncTest {
                                           dbConfig(ProjectType.Wallet))
     val walletDbManagement = createWalletDbManagement(walletAppConfig)
     val result = walletDbManagement.migrate()
-    assert(result == 4)
+    assert(result == 6)
   }
 
   it must "run migrations for node db" in {
