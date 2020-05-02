@@ -8,7 +8,11 @@ import org.bitcoins.core.hd.{AddressType, HDChainType}
 import org.bitcoins.core.number.UInt32
 import org.bitcoins.core.protocol.script._
 import org.bitcoins.core.protocol.transaction._
-import org.bitcoins.core.protocol.{Bech32Address, BlockStamp}
+import org.bitcoins.core.protocol.{
+  Bech32Address,
+  BlockStamp,
+  BlockStampWithFuture
+}
 import org.bitcoins.core.util.FutureUtil
 import org.bitcoins.core.wallet.fee.{FeeUnit, SatoshisPerVirtualByte}
 import org.bitcoins.core.wallet.utxo.BitcoinUTXOSpendingInfoSingle
@@ -369,7 +373,7 @@ abstract class DLCWallet extends Wallet {
     }
   }
 
-  def verifyCETSigs(sign: DLCSign): Future[Boolean] = {
+  def verifyCETSigs(sign: DLCSignatureMessage): Future[Boolean] = {
     for {
       (dlcDb, dlcOffer, dlcAccept, fundingInputs, outcomeSigs) <- getAllDLCData(
         sign.eventId)
@@ -389,7 +393,7 @@ abstract class DLCWallet extends Wallet {
     }
   }
 
-  def verifyRefundSig(sign: DLCSign): Future[Boolean] = {
+  def verifyRefundSig(sign: DLCSignatureMessage): Future[Boolean] = {
     for {
       (dlcDb, dlcOffer, dlcAccept, fundingInputs, outcomeSigs) <- getAllDLCData(
         sign.eventId)
@@ -404,7 +408,7 @@ abstract class DLCWallet extends Wallet {
 
   def verifyFundingSigs(
       inputs: Vector[DLCFundingInputDb],
-      sign: DLCSign): Future[Boolean] = {
+      sign: DLCSignatureMessage): Future[Boolean] = {
     if (inputs.count(!_.isInitiator) == sign.fundingSigs.keys.size) {
       for {
         (dlcDb, dlcOffer, dlcAccept, fundingInputs, outcomeSigs) <- getAllDLCData(
@@ -426,7 +430,8 @@ abstract class DLCWallet extends Wallet {
 
   /** Takes a DLCSign an inserts the funding signatures into the database
     * This is the only way one should insert sigs to the database */
-  def addFundingSigs(sign: DLCSign): Future[Vector[DLCFundingInputDb]] = {
+  def addFundingSigs(
+      sign: DLCSignatureMessage): Future[Vector[DLCFundingInputDb]] = {
     for {
       inputs <- dlcInputsDAO.findByEventId(sign.eventId)
       isValid <- verifyFundingSigs(inputs, sign)
@@ -771,5 +776,91 @@ abstract class DLCWallet extends Wallet {
           None
       }
     }
+  }
+
+  // DLC Transfers
+
+  def initDLCTransfer(
+      oracleInfo: OracleInfo,
+      contractInfo: ContractInfo,
+      collateral: Satoshis,
+      feeRateOpt: Option[FeeUnit],
+      locktime: UInt32,
+      refundLT: UInt32,
+      transferTimeout: UInt32,
+      remotePubKeys: DLCPublicKeys,
+      sellerFundingKey: ECPublicKey,
+      buyout: CurrencyUnit,
+      fee: CurrencyUnit
+  ): Future[DLCTransferInit] = {
+    for {
+      offer <- createDLCOffer(oracleInfo,
+                              contractInfo,
+                              collateral,
+                              feeRateOpt,
+                              locktime,
+                              refundLT)
+
+      transferDb = DLCTransferDb(offer.eventId,
+                                 BlockStampWithFuture(transferTimeout),
+                                 buyout,
+                                 fee,
+                                 remotePubKeys,
+                                 Some(sellerFundingKey))
+      _ <- dlcTransferDAO.upsert(transferDb)
+    } yield {
+      DLCTransferInit(
+        offer.eventId,
+        offer.pubKeys,
+        offer.totalCollateral,
+        offer.fundingInputs,
+        offer.changeAddress,
+        offer.feeRate,
+        buyout.satoshis,
+        fee.satoshis,
+        BlockStampWithFuture(transferTimeout)
+      )
+    }
+  }
+
+  def cancelDLCTransfer(eventId: Sha256DigestBE): Future[DLCCancelTransfer] =
+    ???
+
+  def signDLCTransfer(eventId: Sha256DigestBE): Future[DLCTransferSign] = ???
+
+  def addDLCTransferSigs(sigs: DLCTransferSign): Future[DLCDb] = {
+    for {
+      dlcDb <- dlcDAO.findByEventId(sigs.eventId).flatMap {
+        case Some(dlc) =>
+          for {
+            isRefundSigValid <- verifyRefundSig(sigs)
+            _ = if (!isRefundSigValid)
+              throw new IllegalArgumentException(
+                s"Refund sig provided is not valid! got ${sigs.cetSigs.refundSig}")
+
+            // fixme shouldn't lose old refund sig
+            newDLCDb = dlc.copy(
+              refundSigOpt = Some(sigs.cetSigs.refundSig)
+            )
+            dlcDb <- dlcDAO.update(newDLCDb)
+
+            isCETSigsValid <- verifyCETSigs(sigs)
+            _ = if (!isCETSigsValid)
+              throw new IllegalArgumentException(
+                s"CET sigs provided are not valid! got ${sigs.cetSigs.outcomeSigs}")
+
+            sigsDbs = sigs.cetSigs.outcomeSigs
+              .map(sig => DLCCETSignatureDb(sigs.eventId, sig._1, sig._2))
+              .toVector
+            _ <- dlcSigsDAO.createAll(sigsDbs)
+
+            _ <- addFundingSigs(sigs)
+          } yield dlcDb
+        case None =>
+          Future.failed(
+            new NoSuchElementException(
+              s"No DLC found with corresponding eventId ${sigs.eventId}"))
+      }
+    } yield dlcDb
   }
 }

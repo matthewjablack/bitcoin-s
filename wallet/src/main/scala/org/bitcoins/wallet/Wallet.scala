@@ -48,6 +48,7 @@ abstract class Wallet
 
   private[wallet] val dlcOfferDAO: DLCOfferDAO = DLCOfferDAO()
   private[wallet] val dlcAcceptDAO: DLCAcceptDAO = DLCAcceptDAO()
+  private[wallet] val dlcTransferDAO: DLCTransferDAO = DLCTransferDAO()
   private[wallet] val dlcDAO: DLCDAO = DLCDAO()
   private[wallet] val dlcInputsDAO: DLCFundingInputDAO = DLCFundingInputDAO()
   private[wallet] val dlcSigsDAO: DLCCETSignatureDAO = DLCCETSignatureDAO()

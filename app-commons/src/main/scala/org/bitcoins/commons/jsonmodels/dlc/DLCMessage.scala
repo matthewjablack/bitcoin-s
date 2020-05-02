@@ -2,13 +2,13 @@ package org.bitcoins.commons.jsonmodels.dlc
 
 import org.bitcoins.core.currency.Satoshis
 import org.bitcoins.core.number.UInt32
+import org.bitcoins.core.protocol.{BitcoinAddress, BlockStampWithFuture}
 import org.bitcoins.core.protocol.BlockStamp.BlockTime
 import org.bitcoins.core.protocol.transaction.{
   OutputReference,
   TransactionOutPoint,
   TransactionOutput
 }
-import org.bitcoins.core.protocol.BitcoinAddress
 import org.bitcoins.core.psbt.InputPSBTRecord.PartialSignature
 import org.bitcoins.core.util.MapWrapper
 import org.bitcoins.core.wallet.fee.SatoshisPerVirtualByte
@@ -42,6 +42,34 @@ object DLCMessage {
       implicit obj: mutable.LinkedHashMap[String, Value]): Value = {
     val index = obj.keys.toList.indexOf(key)
     obj.values(index)
+  }
+
+  private def readDLCPubKeys(vec: Vector[(String, Value)]): DLCPublicKeys = {
+    implicit val obj: mutable.LinkedHashMap[String, Value] = vec("pubKeys").obj
+
+    val fundingKey = getValue("fundingKey")
+    val toLocalCETKey = getValue("toLocalCETKey")
+    val finalAddress = getValue("finalAddress")
+
+    DLCPublicKeys(
+      ECPublicKey(fundingKey.str),
+      ECPublicKey(toLocalCETKey.str),
+      BitcoinAddress(finalAddress.str).get
+    )
+  }
+
+  private def readFundingInputs(
+      vec: Vector[(String, Value)]): Vector[OutputReference] = {
+    vec("fundingInputs").arr.map { subVal =>
+      implicit val obj: mutable.LinkedHashMap[String, Value] =
+        subVal.obj
+
+      val outpoint = getValue("outpoint")
+      val output = getValue("output")
+
+      OutputReference(TransactionOutPoint(outpoint.str),
+                      TransactionOutput(output.str))
+    }.toVector
   }
 
   case class OracleInfo(pubKey: SchnorrPublicKey, rValue: SchnorrNonce)
@@ -206,46 +234,12 @@ object DLCMessage {
           .get
           .toMap
 
-      val fundingInputs =
-        vec
-          .find(_._1 == "fundingInputs")
-          .map {
-            case (_, value) =>
-              value.arr.map { subVal =>
-                implicit val obj: mutable.LinkedHashMap[String, Value] =
-                  subVal.obj
-
-                val outpoint = getValue("outpoint")
-                val output = getValue("output")
-
-                OutputReference(TransactionOutPoint(outpoint.str),
-                                TransactionOutput(output.str))
-              }
-          }
-          .get
-          .toVector
+      val fundingInputs = readFundingInputs(vec)
 
       val oracleInfo =
         vec.find(_._1 == "oracleInfo").map(obj => OracleInfo(obj._2.str)).get
 
-      val pubKeys =
-        vec
-          .find(_._1 == "pubKeys")
-          .map {
-            case (_, value) =>
-              implicit val obj: mutable.LinkedHashMap[String, Value] = value.obj
-
-              val fundingKey = getValue("fundingKey")
-              val toLocalCETKey = getValue("toLocalCETKey")
-              val finalAddress = getValue("finalAddress")
-
-              DLCPublicKeys(
-                ECPublicKey(fundingKey.str),
-                ECPublicKey(toLocalCETKey.str),
-                BitcoinAddress(finalAddress.str).get
-              )
-          }
-          .get
+      val pubKeys = readDLCPubKeys(vec)
 
       val totalCollateral = vec
         .find(_._1 == "totalCollateral")
@@ -352,46 +346,9 @@ object DLCMessage {
           .map(obj => BitcoinAddress.fromString(obj._2.str).get)
           .get
 
-      val pubKeys =
-        vec
-          .find(_._1 == "pubKeys")
-          .map {
-            case (_, value) =>
-              implicit val obj: mutable.LinkedHashMap[String, Value] = value.obj
+      val pubKeys = readDLCPubKeys(vec)
 
-              val fundingKey =
-                getValue("fundingKey")
-              val toLocalCETKey =
-                getValue("toLocalCETKey")
-              val finalAddress =
-                getValue("finalAddress")
-
-              DLCPublicKeys(
-                ECPublicKey(fundingKey.str),
-                ECPublicKey(toLocalCETKey.str),
-                BitcoinAddress(finalAddress.str).get
-              )
-          }
-          .get
-
-      val fundingInputs =
-        vec
-          .find(_._1 == "fundingInputs")
-          .map {
-            case (_, value) =>
-              value.arr.map { subVal =>
-                implicit val obj: mutable.LinkedHashMap[String, Value] =
-                  subVal.obj
-
-                val outpoint = getValue("outpoint")
-                val output = getValue("output")
-
-                OutputReference(TransactionOutPoint(outpoint.str),
-                                TransactionOutput(output.str))
-              }
-          }
-          .get
-          .toVector
+      val fundingInputs = readFundingInputs(vec)
 
       val cetSigs =
         vec
@@ -429,11 +386,10 @@ object DLCMessage {
     }
   }
 
-  case class DLCSign(
-      cetSigs: CETSignatures,
-      fundingSigs: FundingSignatures,
-      eventId: Sha256DigestBE)
-      extends DLCMessage {
+  sealed trait DLCSignatureMessage extends DLCMessage {
+    def cetSigs: CETSignatures
+    def fundingSigs: FundingSignatures
+    def eventId: Sha256DigestBE
 
     def toJson: Value = {
 
@@ -467,61 +423,65 @@ object DLCMessage {
     }
   }
 
-  object DLCSign {
+  object DLCSignatureMessage {
 
-    def fromJson(js: Value): DLCSign = {
+    def fromJson[T <: DLCSignatureMessage](
+        js: Value,
+        constructor: (CETSignatures, FundingSignatures, Sha256DigestBE) => T): T = {
       val vec = js.obj.toVector
 
-      val cetSigs =
-        vec
-          .find(_._1 == "cetSigs")
-          .map {
-            case (_, value) =>
-              implicit val obj: mutable.LinkedHashMap[String, Value] = value.obj
+      val cetSigs = {
+        implicit val obj: mutable.LinkedHashMap[String, Value] = vec("cetSigs").obj
 
-              val outcomeSigsMap = getValue("outcomeSigs")
-              val outcomeSigs = outcomeSigsMap.arr.map { item =>
-                val (key, value) = item.obj.head
-                val hash = Sha256DigestBE(key)
-                val sig = PartialSignature(value.str)
-                (hash, sig)
-              }
+        val outcomeSigsMap = getValue("outcomeSigs")
+        val outcomeSigs = outcomeSigsMap.arr.map { item =>
+          val (key, value) = item.obj.head
+          val hash = Sha256DigestBE(key)
+          val sig = PartialSignature(value.str)
+          (hash, sig)
+        }
 
-              val refundSig = getValue("refundSig")
+        val refundSig = getValue("refundSig")
 
-              CETSignatures(
-                outcomeSigs.toMap,
-                PartialSignature(refundSig.str)
-              )
+        CETSignatures(
+          outcomeSigs.toMap,
+          PartialSignature(refundSig.str)
+        )
+      }
+
+      val fundingSigs = {
+        val value = vec("fundingSigs")
+        if (value.obj.isEmpty) {
+          throw new RuntimeException(
+            s"DLC Sign cannot have empty fundingSigs, got $js")
+        } else {
+          value.obj.toVector.map {
+            case (outPoint, sigs) =>
+              (TransactionOutPoint(outPoint),
+               sigs.arr
+                 .map(sig => PartialSignature(sig.str))
+                 .toVector)
           }
-          .get
+        }.toMap
+      }
 
-      val fundingSigs =
-        vec
-          .find(_._1 == "fundingSigs")
-          .map {
-            case (_, value) =>
-              if (value.obj.isEmpty) {
-                throw new RuntimeException(
-                  s"DLC Sign cannot have empty fundingSigs, got $js")
-              } else {
-                value.obj.toVector.map {
-                  case (outPoint, sigs) =>
-                    (TransactionOutPoint(outPoint),
-                     sigs.arr
-                       .map(sig => PartialSignature(sig.str))
-                       .toVector)
-                }
-              }
-          }
-          .get
-          .toMap
+      val eventId = Sha256DigestBE(vec("eventId").str)
 
-      val eventId =
-        vec.find(_._1 == "eventId").map(obj => Sha256DigestBE(obj._2.str)).get
-
-      DLCSign(cetSigs, FundingSignatures(fundingSigs), eventId)
+      constructor(cetSigs, FundingSignatures(fundingSigs), eventId)
     }
+  }
+
+  case class DLCSign(
+      cetSigs: CETSignatures,
+      fundingSigs: FundingSignatures,
+      eventId: Sha256DigestBE)
+      extends DLCSignatureMessage
+
+  object DLCSign {
+
+    def fromJson(js: Value): DLCSign =
+      DLCSignatureMessage.fromJson[DLCSign](js, DLCSign.apply)
+
   }
 
   case class DLCMutualCloseSig(
@@ -560,5 +520,128 @@ object DLCMessage {
 
       DLCMutualCloseSig(eventId, oracleSig, sig)
     }
+  }
+
+  case class DLCTransferInit(
+      eventId: Sha256DigestBE,
+      pubKeys: DLCPublicKeys,
+      totalCollateral: Satoshis,
+      fundingInputs: Vector[OutputReference],
+      changeAddress: BitcoinAddress,
+      feeRate: SatoshisPerVirtualByte,
+      buyout: Satoshis,
+      fee: Satoshis,
+      transferTimeout: BlockStampWithFuture
+  ) extends DLCSetupMessage {
+    override def toJson: Value = {
+
+      val fundingInputsJson =
+        fundingInputs
+          .map(
+            input =>
+              mutable.LinkedHashMap("outpoint" -> Str(input.outPoint.hex),
+                                    "output" -> Str(input.output.hex)))
+
+      val pubKeysJson =
+        mutable.LinkedHashMap(
+          "fundingKey" -> Str(pubKeys.fundingKey.hex),
+          "toLocalCETKey" -> Str(pubKeys.toLocalCETKey.hex),
+          "finalAddress" -> Str(pubKeys.finalAddress.value)
+        )
+
+      Obj(
+        mutable.LinkedHashMap[String, Value](
+          "eventId" -> Str(eventId.hex),
+          "pubKeys" -> pubKeysJson,
+          "totalCollateral" -> Num(totalCollateral.toLong),
+          "fundingInputs" -> fundingInputsJson,
+          "changeAddress" -> Str(changeAddress.value),
+          "feeRate" -> Num(feeRate.toLong),
+          "buyout" -> Num(buyout.toLong),
+          "fee" -> Num(fee.toLong),
+          "timeout" -> Num(transferTimeout.toUInt32.toLong)
+        )
+      )
+    }
+  }
+
+  object DLCTransferInit {
+
+    def apply(
+        offer: DLCOffer,
+        buyout: Satoshis,
+        fee: Satoshis,
+        transferTimeout: BlockStampWithFuture): DLCTransferInit = {
+      DLCTransferInit(
+        offer.eventId,
+        offer.pubKeys,
+        offer.totalCollateral,
+        offer.fundingInputs,
+        offer.changeAddress,
+        offer.feeRate,
+        buyout,
+        fee,
+        transferTimeout
+      )
+    }
+
+    def fromJson(js: Value): DLCTransferInit = {
+      val vec = js.obj.toVector
+
+      val eventId = Sha256DigestBE(vec("eventId").str)
+
+      val fundingInputs = readFundingInputs(vec)
+
+      val pubKeys = readDLCPubKeys(vec)
+
+      val totalCollateral = Satoshis(vec("totalCollateral").num.toLong)
+
+      val changeAddress =
+        BitcoinAddress.fromString(vec("changeAddress").str).get
+
+      val feeRate = SatoshisPerVirtualByte(Satoshis(vec("feeRate").num.toLong))
+
+      val buyout = Satoshis(vec("buyout").num.toLong)
+      val fee = Satoshis(vec("fee").num.toLong)
+
+      val timeout = BlockStampWithFuture(UInt32(vec("timeout").num.toLong))
+
+      DLCTransferInit(
+        eventId = eventId,
+        pubKeys = pubKeys,
+        totalCollateral = totalCollateral,
+        fundingInputs = fundingInputs,
+        changeAddress = changeAddress,
+        feeRate = feeRate,
+        buyout = buyout,
+        fee = fee,
+        transferTimeout = timeout
+      )
+    }
+  }
+
+  case class DLCTransferSign(
+      cetSigs: CETSignatures,
+      fundingSigs: FundingSignatures,
+      eventId: Sha256DigestBE)
+      extends DLCSignatureMessage
+
+  object DLCTransferSign {
+
+    def fromJson(js: Value): DLCTransferSign =
+      DLCSignatureMessage.fromJson[DLCTransferSign](js, DLCTransferSign.apply)
+  }
+
+  case class DLCCancelTransfer(
+      cetSigs: CETSignatures,
+      fundingSigs: FundingSignatures,
+      eventId: Sha256DigestBE)
+      extends DLCSignatureMessage
+
+  object DLCCancelTransfer {
+
+    def fromJson(js: Value): DLCCancelTransfer =
+      DLCSignatureMessage
+        .fromJson[DLCCancelTransfer](js, DLCCancelTransfer.apply)
   }
 }

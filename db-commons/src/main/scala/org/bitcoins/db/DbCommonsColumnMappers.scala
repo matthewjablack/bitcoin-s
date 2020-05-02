@@ -219,6 +219,11 @@ abstract class DbCommonsColumnMappers {
       .base[PartialSignature, String](_.hex, PartialSignature.fromHex)
   }
 
+  implicit val ecDigitalSignatureMapper: BaseColumnType[ECDigitalSignature] = {
+    MappedColumnType
+      .base[ECDigitalSignature, String](_.hex, ECDigitalSignature.fromHex)
+  }
+
   implicit val partialSigsMapper: BaseColumnType[Vector[PartialSignature]] = {
     MappedColumnType
       .base[Vector[PartialSignature], String](

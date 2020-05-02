@@ -3,6 +3,7 @@ package org.bitcoins.wallet.api
 import java.time.Instant
 
 import org.bitcoins.commons.jsonmodels.dlc.DLCMessage._
+import org.bitcoins.commons.jsonmodels.dlc.DLCPublicKeys
 import org.bitcoins.core.api.{ChainQueryApi, NodeApi}
 import org.bitcoins.core.bloom.BloomFilter
 import org.bitcoins.core.config.NetworkParameters
@@ -479,6 +480,23 @@ trait WalletApi extends WalletLogger {
   def claimDLCPenaltyFunds(
       eventId: Sha256DigestBE,
       forceCloseTx: Transaction): Future[Option[Transaction]]
+
+  def initDLCTransfer(
+      oracleInfo: OracleInfo,
+      contractInfo: ContractInfo,
+      collateral: Satoshis,
+      feeRateOpt: Option[FeeUnit],
+      locktime: UInt32,
+      refundLT: UInt32,
+      transferTimeout: UInt32,
+      eventId: Sha256DigestBE,
+      sellerPubKeys: DLCPublicKeys,
+      remotePubKeys: DLCPublicKeys
+  ): Future[DLCTransferInit]
+
+  def cancelDLCTransfer(eventId: Sha256DigestBE): Future[DLCCancelTransfer]
+
+  def signDLCTransfer(eventId: Sha256DigestBE): Future[DLCTransferSign]
 
   /**
     *
