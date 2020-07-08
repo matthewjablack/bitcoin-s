@@ -16,7 +16,7 @@ import org.bitcoins.core.Core
 import org.bitcoins.core.util.{BitcoinSLogger, FutureUtil, NetworkUtil}
 import org.bitcoins.db.AppConfig
 import org.bitcoins.feeprovider.BitcoinerLiveFeeRateProvider
-import org.bitcoins.node.config.NodeAppConfig
+import org.bitcoins.node.config.{EclairAppConfig, NodeAppConfig}
 import org.bitcoins.node.models.Peer
 import org.bitcoins.node._
 import org.bitcoins.wallet.api._
@@ -58,6 +58,7 @@ object Main extends App with BitcoinSLogger {
     require(nodeConf.isNeutrinoEnabled != nodeConf.isSPVEnabled,
             "Either Neutrino or SPV mode should be enabled")
     implicit val chainConf: ChainAppConfig = conf.chainConf
+    implicit val eclairConf: EclairAppConfig = conf.eclairConf
 
     if (nodeConf.peers.isEmpty) {
       throw new IllegalArgumentException(
@@ -69,6 +70,24 @@ object Main extends App with BitcoinSLogger {
                                          nodeConf.network.port)
     val peer = Peer.fromSocket(peerSocket)
     val bip39PasswordOpt = None //todo need to prompt user for this
+
+    val eclairAndBitcoindOpt = if (eclairConf.enabled) {
+      val eclairAndBitcoind = EclairBitcoindPair.fromConfig(eclairConf)
+      require(eclairAndBitcoind.eclair.instance.network == nodeConf.network,
+              "Eclair must be on the same network as us")
+      require(eclairAndBitcoind.bitcoind.instance.network == nodeConf.network,
+              "bitcoind must be on the same network as us")
+      require(
+        eclairAndBitcoind.bitcoind.instance.uri.getHost == peerSocket.getHostString,
+        s"${eclairAndBitcoind.bitcoind.instance.uri.getHost} != ${peerSocket.getHostString}"
+      )
+      require(
+        eclairAndBitcoind.bitcoind.instance.uri.getPort == peerSocket.getPort,
+        s"${eclairAndBitcoind.bitcoind.instance.uri.getPort} != ${peerSocket.getPort}")
+      Some(eclairAndBitcoind)
+    } else {
+      None
+    }
 
     //initialize the config, run migrations
     val configInitializedF = conf.initialize()
@@ -107,6 +126,9 @@ object Main extends App with BitcoinSLogger {
     //start and sync our node
     val syncedNodeF = for {
       node <- nodeWithCallbacksF
+      // Start bitcoind first bc the node will need to connect to it
+      _ <- eclairAndBitcoindOpt.map(_.start()).getOrElse(FutureUtil.unit)
+      _ = logger.info("Starting Node")
       _ <- node.start()
       _ =
         if (nodeConf.isSPVEnabled) {
@@ -123,13 +145,16 @@ object Main extends App with BitcoinSLogger {
     val startFut = for {
       node <- syncedNodeF
       wallet <- walletF
-      binding <- startHttpServer(node, wallet, rpcPortOpt)
+      binding <- startHttpServer(node, wallet, eclairAndBitcoindOpt, rpcPortOpt)
     } yield {
       logger.info(s"Done starting Main!")
       sys.addShutdownHook {
         logger.error(s"Exiting process")
 
         wallet.stop()
+
+        eclairAndBitcoindOpt.foreach(
+          _.stop().foreach(_ => logger.info("Stopped eclair and bitcoind")))
 
         node
           .stop()
@@ -234,32 +259,36 @@ object Main extends App with BitcoinSLogger {
   private def startHttpServer(
       node: Node,
       wallet: WalletApi,
+      eclairAndBitcoindOpt: Option[EclairBitcoindPair],
       rpcPortOpt: Option[Int])(implicit
       system: ActorSystem,
       conf: BitcoinSAppConfig): Future[Http.ServerBinding] = {
     import system.dispatcher
     implicit val nodeConf: NodeAppConfig = conf.nodeConf
+    implicit val eclairConf: EclairAppConfig = conf.eclairConf
     for {
       syncedChainApi <- node.chainApiFromDb()
       walletRoutes = WalletRoutes(wallet, node)
       nodeRoutes = NodeRoutes(node)
       chainRoutes = ChainRoutes(syncedChainApi)
       coreRoutes = CoreRoutes(Core)
+      standardRoutes = Seq(walletRoutes, nodeRoutes, chainRoutes, coreRoutes)
+      routes = standardRoutes ++ (eclairAndBitcoindOpt match {
+        case Some(eclairAndBitcoind) =>
+          Seq(EclairRoutes(eclairAndBitcoind.eclair))
+        case None =>
+          Seq.empty
+      })
       server = {
         rpcPortOpt match {
           case Some(rpcport) =>
-            Server(nodeConf,
-                   Seq(walletRoutes, nodeRoutes, chainRoutes, coreRoutes),
-                   rpcport = rpcport)
+            Server(nodeConf, routes, rpcport = rpcport)
           case None =>
             conf.rpcPortOpt match {
               case Some(rpcport) =>
-                Server(nodeConf,
-                       Seq(walletRoutes, nodeRoutes, chainRoutes, coreRoutes),
-                       rpcport)
+                Server(nodeConf, routes, rpcport)
               case None =>
-                Server(nodeConf,
-                       Seq(walletRoutes, nodeRoutes, chainRoutes, coreRoutes))
+                Server(nodeConf, routes)
             }
         }
       }
