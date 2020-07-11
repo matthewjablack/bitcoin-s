@@ -10,7 +10,7 @@ import org.bitcoins.core.config.RegTest
 import org.bitcoins.core.crypto.ExtKeyVersion.LegacyTestNet3Priv
 import org.bitcoins.core.crypto.ExtPrivateKey
 import org.bitcoins.core.currency.{CurrencyUnit, CurrencyUnits, Satoshis}
-import org.bitcoins.core.number.{Int64, UInt32}
+import org.bitcoins.core.number.{Int32, Int64, UInt32}
 import org.bitcoins.core.protocol.BlockStamp.BlockTime
 import org.bitcoins.core.protocol.script.{EmptyScriptPubKey, P2WPKHWitnessSPKV0}
 import org.bitcoins.core.protocol.transaction._
@@ -66,13 +66,21 @@ class DLCClientTest extends BitcoinSAsyncTest {
         }
 
         val inputKey = ECPrivateKey.freshPrivateKey
+
+        val prevTx = BaseTransaction(
+          Int32.two,
+          Nil,
+          Vector(
+            TransactionOutput(totalInput,
+                              P2WPKHWitnessSPKV0(inputKey.publicKey))),
+          UInt32.zero)
         val utxos: Vector[ScriptSignatureParams[P2WPKHV0InputInfo]] = Vector(
           ScriptSignatureParams(
             P2WPKHV0InputInfo(outPoint =
-                                TransactionOutPoint(DoubleSha256DigestBE.empty,
-                                                    UInt32.zero),
+                                TransactionOutPoint(prevTx.txId, UInt32.zero),
                               amount = totalInput,
                               pubKey = inputKey.publicKey),
+            prevTransaction = prevTx,
             signer = inputKey,
             hashType = HashType.sigHashAll
           ))
@@ -146,6 +154,7 @@ class DLCClientTest extends BitcoinSAsyncTest {
                           TransactionOutPoint(localFundingTx.txId, UInt32.zero),
                         amount = localInput * 2,
                         pubKey = inputPubKeyLocal),
+      prevTransaction = localFundingTx,
       signer = inputPrivKeyLocal,
       hashType = HashType.sigHashAll
     )
@@ -166,6 +175,7 @@ class DLCClientTest extends BitcoinSAsyncTest {
                                                        UInt32.zero),
                         amount = remoteInput * 2,
                         pubKey = inputPubKeyRemote),
+      prevTransaction = remoteFundingTx,
       signer = inputPrivKeyRemote,
       hashType = HashType.sigHashAll
     )

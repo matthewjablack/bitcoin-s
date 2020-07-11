@@ -2,13 +2,7 @@ package org.bitcoins.core.wallet.builder
 
 import org.bitcoins.core.crypto.TxSigComponent
 import org.bitcoins.core.protocol.script.ScriptWitness
-import org.bitcoins.core.protocol.transaction.{
-  EmptyWitness,
-  Transaction,
-  TransactionWitness,
-  TxUtil,
-  WitnessTransaction
-}
+import org.bitcoins.core.protocol.transaction._
 import org.bitcoins.core.util.BitcoinSLogger
 import org.bitcoins.core.wallet.fee.FeeUnit
 import org.bitcoins.core.wallet.signer.BitcoinSigner

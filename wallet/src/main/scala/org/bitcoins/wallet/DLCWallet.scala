@@ -9,6 +9,7 @@ import org.bitcoins.core.number.UInt32
 import org.bitcoins.core.protocol.script._
 import org.bitcoins.core.protocol.transaction._
 import org.bitcoins.core.protocol.{Bech32Address, BlockStamp}
+import org.bitcoins.core.util.FutureUtil
 import org.bitcoins.core.wallet.fee.{FeeUnit, SatoshisPerVirtualByte}
 import org.bitcoins.core.wallet.utxo.{InputInfo, ScriptSignatureParams}
 import org.bitcoins.crypto._
@@ -137,6 +138,7 @@ abstract class DLCWallet extends Wallet {
         feeRate = feeRate,
         fromAccount = account,
         keyManagerOpt = Some(keyManager),
+        fromTagOpt = None,
         markAsReserved = true
       )
       utxos = spendingInfos.map(_.outputReference)
@@ -233,6 +235,7 @@ abstract class DLCWallet extends Wallet {
         feeRate = offer.feeRate,
         fromAccount = account,
         keyManagerOpt = Some(keyManager),
+        fromTagOpt = None,
         markAsReserved = true
       )
       network = networkParameters.asInstanceOf[BitcoinNetwork]
@@ -476,7 +479,17 @@ abstract class DLCWallet extends Wallet {
     val outPoints =
       fundingInputs.filter(_.isInitiator == dlcDb.isInitiator).map(_.outPoint)
 
-    listUtxos(outPoints).map(_.map(_.toUTXOInfo(keyManager)))
+    for {
+      utxos <- listUtxos(outPoints)
+      prevTxs <- FutureUtil.foldLeftAsync(Vector.empty[Transaction], utxos) {
+        (accum, utxo) =>
+          transactionDAO
+            .findByOutPoint(utxo.outPoint)
+            .map(_.get.transaction +: accum)
+      }
+    } yield utxos
+      .zip(prevTxs)
+      .map(utxoAndTx => utxoAndTx._1.toUTXOInfo(keyManager, utxoAndTx._2))
   }
 
   private def verifierFromDb(

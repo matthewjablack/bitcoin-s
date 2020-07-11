@@ -9,7 +9,10 @@ import org.bitcoins.core.currency.{CurrencyUnits, Satoshis}
 import org.bitcoins.core.number.UInt32
 import org.bitcoins.core.protocol.BlockStamp.BlockTime
 import org.bitcoins.core.protocol.script.P2WPKHWitnessSPKV0
-import org.bitcoins.core.protocol.transaction.TransactionOutPoint
+import org.bitcoins.core.protocol.transaction.{
+  EmptyTransaction,
+  TransactionOutPoint
+}
 import org.bitcoins.core.script.crypto.HashType
 import org.bitcoins.core.wallet.fee.SatoshisPerVirtualByte
 import org.bitcoins.core.wallet.utxo.{P2WPKHV0InputInfo, ScriptSignatureParams}
@@ -116,6 +119,7 @@ object DLCTestVectorGenerator {
           amount = localInput * 2,
           inputPrivKeyLocal.publicKey
         ),
+        EmptyTransaction,
         signer = inputPrivKeyLocal,
         hashType = HashType.sigHashAll
       )
@@ -133,6 +137,7 @@ object DLCTestVectorGenerator {
           amount = remoteInput * 2,
           inputPrivKeyRemote.publicKey
         ),
+        EmptyTransaction,
         signer = inputPrivKeyRemote,
         hashType = HashType.sigHashAll
       )
